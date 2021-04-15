@@ -6,12 +6,20 @@ html, body {
 
 body {
 	margin: 0;
-	box-sizing: border-box;
-	font-family: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
     overflow: hidden;
+	font-family: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
 }
 
-input {
+* {
+    box-sizing: border-box;
+}
+
+article, button, div, form, input, section {
+    outline: 0;
+}
+
+button, input {
+    border: none;
     font-family: inherit;
 }
 

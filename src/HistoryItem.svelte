@@ -23,8 +23,6 @@
         height: 36px;
     }
 
-  
-
     div div {
         display: flex;
         flex-flow: column;
@@ -34,18 +32,17 @@
     div div h4 {
         font-size: 14px;
         margin: 0;
-        color: #fafafa;
+        color: var(--base-white);
     }
 
     div div p {
         margin: 0;
         font-size: 14px;
         color: #fff;
- 
     }
 
     div.announcement div p {
-        color: #787878;
+        color: var(--white-35);
         font-style: italic;
     }
 </style>

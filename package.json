@@ -5,7 +5,9 @@
   "scripts": {
     "build": "rollup -c",
     "dev": "rollup -c -w",
-    "start": "sirv public --no-clear --single"
+    "sync-avatars": "node ./scripts/syncAvatars.js",
+    "start": "sirv public --no-clear --single",
+    "deploy": "rollup -c && firebase deploy --only hosting"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^17.0.0",

@@ -1,33 +1,76 @@
 <script>
-	import HistoryItem from "./HistoryItem.svelte";
 	import YouTube from "svelte-youtube";
-	import firebase from "firebase";
+	import Loading from "./Loading.svelte";
+	import Icon from "./Icon.svelte";
+	import HistoryItem from "./HistoryItem.svelte";
+
+	import firebase from "firebase/app";
+	import { app, authorize } from "./firebase";
+	import { avatars } from "./avatars";
+	import { fade } from "svelte/transition";
 
 	export let id;
 
-	const firebaseConfig = {
-		apiKey: "AIzaSyA2x75RoeTo31C25tty9Fdude8Qe3Xrg8c",
-		authDomain: "party-c0af9.firebaseapp.com",
-		projectId: "party-c0af9",
-		storageBucket: "party-c0af9.appspot.com",
-		messagingSenderId: "697903592114",
-		appId: "1:697903592114:web:059c685ba49c9110294fab",
-		measurementId: "G-TREHBQ2EQG",
-	};
-
-	const app = firebase.initializeApp(firebaseConfig);
 	const auth = app.auth();
 	const firestore = app.firestore();
 	const db = app.database();
-	const partyRef = firestore.collection("party").doc(id);
+
+	let player;
+
+	let undock;
+	let undockedMessageReceived = false;
+	let undockedMessageReceivedTimer;
 
 	let party;
-	let player;
 	let user;
+	let partyRef = firestore.collection("party").doc(id);
+	let userRef;
 
-	let messages = [];
+	let profileOpen;
+	let avatarsOpen;
+
 	let message;
 	let scrollElement;
+
+	let participantMap = new Map();
+
+	let isPartyReady;
+
+	let stop;
+	function updateParticipants() {
+		if (stop) {
+			stop();
+		}
+		const messages = party.messages.slice(
+			Math.max(party.messages.length - 20, 1)
+		);
+
+		const participants = messages
+			.map((m) => m.participant_id)
+			.concat(party.participants);
+
+		if (!participants.length) {
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve) => {
+			stop = firestore
+				.collection("users")
+				.where(
+					firebase.firestore.FieldPath.documentId(),
+					"in",
+					Array.from(new Set(participants))
+				)
+				.onSnapshot((snapshot) => {
+					participantMap = new Map(
+						snapshot.docs.map((p) => {
+							return [p.id, p.data()];
+						})
+					);
+					resolve();
+				});
+		});
+	}
 
 	function sendMessage(event) {
 		if (event.keyCode == 13 && message && String(message).trim()) {
@@ -42,8 +85,100 @@
 		}
 	}
 
-	async function partyReady() {
+	function getCurrentPlayerState(num) {
+		const state = {
+			1: "playing",
+			2: "paused",
+		};
+		return state[num] || "paused";
+	}
+
+	async function stateChange(event) {
+		if (!isPartyReady) {
+			return;
+		}
+		const currentState = getCurrentPlayerState(
+			event.detail.target.getPlayerState()
+		);
+		if (party.host == user.uid) {
+			partyRef.update({
+				"state.playback_state": currentState,
+				"state.current_time": event.detail.target.getCurrentTime(),
+				"state.last_acknowledge": firebase.firestore.FieldValue.serverTimestamp(),
+			});
+		} else if (currentState == "playing") {
+			const currentTime = event.detail.target.getCurrentTime();
+			const desiredTime =
+				party.state.current_time +
+				calculateLatencySinceLastAcknowledge(party);
+			if (
+				currentTime + 2 < desiredTime ||
+				currentTime > desiredTime + 2
+			) {
+				player.player.seekTo(desiredTime);
+			}
+		}
+	}
+
+	function calculateLatencySinceLastAcknowledge(party) {
+		const ackUnix = party.state.last_acknowledge.toDate().getTime();
+		return Math.abs(Date.now() - ackUnix) / 1000 + 0.7;
+	}
+
+	async function upstreamChanged(currentParty) {
+		if (currentParty.host != user.uid) {
+			if (party.video_id != currentParty.video_id) {
+				player.player.loadVideoById({
+					videoId: currentParty.video_id,
+					startSeconds: currentParty.state.current_time,
+				});
+			}
+
+			if (
+				currentParty.state.playback_state != party.state.playback_state
+			) {
+				let timeToSeek = currentParty.state.current_time;
+
+				if (currentParty.state.playback_state == "playing") {
+					timeToSeek += calculateLatencySinceLastAcknowledge(
+						currentParty
+					);
+				}
+				player.player.seekTo(timeToSeek);
+
+				if (currentParty.state.playback_state == "playing") {
+					console.log("play");
+					player.player.mute();
+					player.player.playVideo();
+					player.player.unMute();
+				} else {
+					player.player.pauseVideo();
+				}
+			}
+		}
+
+		if ( party.messages.length != currentParty.messages.length ) {
+			clearTimeout(undockedMessageReceivedTimer);
+			undockedMessageReceived = true;
+			setTimeout(() => undockedMessageReceived = false, 5000);
+		}
+
+		party = currentParty;
+
+		updateParticipants();
+
+		requestAnimationFrame(() => {
+			scrollElement.scrollTop = scrollElement.scrollHeight + 100;
+		});
+	}
+
+	async function ready() {
+		userRef = await authorize();
+		user = { ...auth.currentUser };
+
+		party = await partyRef.get().then((snapshot) => snapshot.data());
 		const statusRef = db.ref(`/presence/${user.uid}/${id}`);
+
 		db.ref(".info/connected").on("value", async (snapshot) => {
 			if (snapshot.val() == false) {
 				return;
@@ -54,9 +189,15 @@
 			});
 		});
 
+		let currentTime = party.state.current_time;
+
+		if (party.state.playback_state == "playing") {
+			currentTime += calculateLatencySinceLastAcknowledge(party);
+		}
+
 		player.player.loadVideoById({
 			videoId: party.video_id,
-			startSeconds: party.state.current_time,
+			startSeconds: currentTime,
 		});
 
 		if (party.state.playback_state == "playing") {
@@ -65,95 +206,165 @@
 			player.player.pauseVideo();
 		}
 
-		partyRef.onSnapshot((snapshot) => {
-			const currentParty = snapshot.data();
+		await updateParticipants();
 
-			messages = currentParty.messages;
+		partyRef.onSnapshot((snapshot) => upstreamChanged(snapshot.data()));
 
-			requestAnimationFrame(() => {
-				scrollElement.scrollTop = scrollElement.scrollHeight + 100;
-			});
+		setTimeout(
+			() =>
+				requestAnimationFrame(() => {
+					isPartyReady = true;
+				}),
+			2000
+		);
 
-			if (party.host != user.uid) {
-		
-				syncPlaybackState(currentParty.state);
-				party.state = currentParty.state;
-			}
+		if (party.host == user.uid) {
+			setInterval(async () => {
+				partyRef.update({
+					"state.current_time": await player.player.getCurrentTime(),
+					"state.last_acknowledge": firebase.firestore.FieldValue.serverTimestamp(),
+				});
+			}, 5000);
+		}
+	}
+
+	let nickname;
+
+	function announceProfileUpdate() {
+		partyRef.update({
+			messages: firebase.firestore.FieldValue.arrayUnion({
+				participant_id: user.uid,
+				content: "updated their user icon or nickname",
+				created_at: firebase.firestore.Timestamp.now(),
+				announcement: true,
+			}),
 		});
 	}
-	async function syncPlaybackState(desiredPlaybackState) {
-		if (desiredPlaybackState.playback_state != party.state.playback_state) {
 
-			player.player.seekTo(desiredPlaybackState.current_time);
-			if (desiredPlaybackState.playback_state == "playing") {
-				console.log("play")
-				player.player.mute();
-				player.player.playVideo();
-				player.player.unMute();
-			} else {
-				player.player.pauseVideo();
-			}
-		}
-	}
-
-	async function getCurrentPlayerState() {
-		const state = {
-			1: "playing",
-			2: "paused",
-		};
-		return state[await player.player.getPlayerState()] || "paused";
-	}
-
-	async function stateChange(event) {
-		const currentState = await getCurrentPlayerState();
-		if (party.host == user.uid) {
-			partyRef.update({
-				"state.playback_state": currentState,
-				"state.current_time": event.detail.target.getCurrentTime(),
-				"state.last_acknowledge": firebase.firestore.FieldValue.serverTimestamp(),
+	function updateNickname() {
+		if (nickname) {
+			auth.currentUser.updateProfile({
+				displayName: nickname,
 			});
-		} else if (currentState != party.state.playback_state) {
-			syncPlaybackState(party.state);
+			userRef.update({
+				displayName: nickname,
+			});
+			user.displayName = nickname;
+			nickname = undefined;
+			announceProfileUpdate();
+		}
+
+		profileOpen = false;
+	}
+
+	function updateAvatar(avatar) {
+		avatarsOpen = false;
+		if (avatar != user.photoURL) {
+			user.photoURL = avatar;
+			auth.currentUser.updateProfile({
+				photoURL: avatar,
+			});
+			userRef.update({
+				photoURL: avatar,
+			});
+			announceProfileUpdate();
 		}
 	}
 
-	async function ready() {
-		user = (await auth.signInAnonymously()).user;
-		party = (await partyRef.get()).data();
-		await partyReady();
-	}
+	ready();
 </script>
 
-<main>
+{#if !isPartyReady}
+	<main class="loading" transition:fade><Loading /></main>
+{/if}
+<main style="display: {isPartyReady ? 'flex' : 'none'}">
 	<div class="player">
 		<YouTube
 			bind:this={player}
 			class="youtube"
-			on:ready={ready}
 			on:stateChange={stateChange}
 		/>
 	</div>
-	<div class="chat">
+	<div
+		class="side"
+		class:undocked={undock}
+		class:message={undock && undockedMessageReceived}
+	>
 		<div class="header">
-			<h4>Youtube Party</h4>
-			<button />
-			<img src="avatars/Batman.svg" />
+			<div on:click={() => (undock = !undock)}><Icon size={30} /></div>
+			<img
+				src="avatars/{user?.photoURL}.svg"
+				on:click={() => (profileOpen = !profileOpen)}
+				alt={user?.photoURL}
+			/>
 		</div>
-		<div class="content scroll" bind:this={scrollElement}>
-			<div class="history">
-				<ul>
-					{#each messages as message}
-						<li>
-							<HistoryItem
-								name={message.participant_id}
-								content={message.content}
-								avatar="avatars/Batman.svg"
-								announcement={message.announcement}
-							/>
-						</li>
-					{/each}
-				</ul>
+		{#if !profileOpen}
+			<div class="host">
+				<img
+					src="avatars/{participantMap.get(party?.host)
+						?.photoURL}.svg"
+					alt={user?.photoURL}
+				/>
+				<h3>{participantMap.get(party?.host)?.displayName}</h3>
+				<small>{party?.state.playback_state} • {party?.participants.length ?? 0}</small>
 			</div>
+		{/if}
+		<div class="content scroll" bind:this={scrollElement}>
+			{#if !profileOpen}
+				<div class="history">
+					<ul>
+						{#each party?.messages.slice(Math.max(party?.messages.length - 20, 1)) || [] as message}
+							<li>
+								<HistoryItem
+									name={participantMap.get(
+										message.participant_id
+									)?.displayName}
+									content={message.content}
+									avatar="avatars/{participantMap.get(
+										message.participant_id
+									)?.photoURL}.svg"
+									announcement={message.announcement}
+								/>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{:else}
+				<div class="profile">
+					{#if !avatarsOpen}
+						<div class="info">
+							<img
+								src="avatars/{user.photoURL}.svg"
+								on:click={() => (avatarsOpen = true)}
+								alt="avatar"
+							/>
+
+							<fieldset>
+								<label for="nickname">Nickname</label>
+								<input
+									id="nickname"
+									placeholder={user.displayName}
+									bind:value={nickname}
+								/>
+							</fieldset>
+
+							<button on:click={updateNickname}>
+								Save changes
+							</button>
+						</div>
+					{:else}
+						<div class="avatars">
+							{#each avatars as avatar}
+								<img
+									src="avatars/{avatar}.svg"
+									on:click={() => updateAvatar(avatar)}
+									alt="avatar"
+								/>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
 		</div>
 
 		<div class="footer">
@@ -169,79 +380,97 @@
 <style>
 	main {
 		display: flex;
-		height: 100vh;
+		height: 100%;
+	}
+
+	main.loading {
+		position: absolute;
+		z-index: 1;
+		width: 100%;
+		height: 100%;
 	}
 
 	.player {
 		flex: 1;
 	}
 
-	.player .youtube {
-		width: 100%;
-	}
-
-	.chat {
-		background: #191919;
-		flex-basis: 300px;
+	.side {
+		background: var(--base-black);
+		flex-basis: 280px;
 		padding: 12px 20px;
 		display: flex;
 		flex-flow: column;
 	}
 
-	.chat .content {
-		flex: 1;
-		overflow-y: scroll;
-		margin-top: 15px;
-		scroll-behavior: smooth;
+	.side.undocked {
+		position: absolute;
+		top: 0;
+		right: 0;
+		height: 100%;
+		opacity: 0.1;
+		transition: 0.7s opacity ease-in-out;
 	}
 
-	.chat .content .history {
-		margin-right: 10px;
+	.side.undocked:hover {
+		opacity: 1;
 	}
 
-	.chat .content .history ul {
-		list-style-type: none;
-		padding: 0;
+	.side.undocked.message {
+		opacity: 0.8;
 	}
 
-	.chat .content .history ul li {
-		margin: 10px 0px;
-	}
-
-	.chat .header {
+	.side .header {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 	}
 
-	.chat .header h4 {
-		color: #ef3e3a;
+	.side .header div {
+		color: var(--base-red);
 		margin: 0;
-		flex: 1;
+		transition: 0.2s transform ease-in-out;
 	}
-
-	.chat .header button {
-		background: url(/images/Link.svg);
-		background-size: contain;
-		height: 18px;
-		width: 18px;
-		border: none;
-		margin-right: 10px;
+	.side .header div:hover {
+		transform: scale(1.1);
 		cursor: pointer;
-		outline: 0;
-		transition: all 0.3s ease-in-out;
 	}
 
-	.chat .header button:hover {
+	.side .header button:hover {
 		height: 20px;
 		width: 20px;
 	}
 
-	.chat .header img {
+	.side .header img {
 		height: 38px;
 		width: 38px;
 	}
 
-	.footer {
+	.side .host {
+		padding: 5px 0px;
+		color: var(--base-white);
+		display: grid;
+		grid-template-columns: 1fr 4fr;
+		grid-template-rows: repeat(2, 1fr);
+		column-gap: 10px;
+	}
+
+	.side .host img {
+		height: 50px;
+		background-color: var(--black-20);
+		padding: 4px;
+		border-radius: 50%;
+		grid-area: 1 / 1 / 3 / 2;
+	}
+
+	.side .host h3 {
+		margin: 0;
+	}
+
+	.side .content {
+		flex: 1;
+		overflow-y: scroll;
+		margin-top: 15px;
+		scroll-behavior: smooth;
 	}
 
 	.footer input {
@@ -252,5 +481,74 @@
 		color: var(--white-15);
 		font-size: 14px;
 		height: 50px;
+	}
+
+	.profile .info {
+		display: flex;
+		flex-flow: column;
+		gap: 25px;
+	}
+
+	.profile .info fieldset {
+		border: none;
+		padding: 0;
+		margin: 0;
+	}
+
+	.profile .info fieldset label {
+		font-weight: var(--medium);
+		color: var(--white-10);
+		font-size: 13px;
+	}
+
+	.profile .info fieldset input {
+		border-radius: 2px;
+		padding: 8px 10px;
+		width: 100%;
+		background: var(--black-15);
+		color: var(--white-15);
+	}
+
+	.profile .info button {
+		width: 100%;
+		background: var(--base-red);
+		color: var(--base-white);
+		padding: 10px 0;
+		border-radius: 2px;
+		font-weight: var(--medium);
+		transition: background 0.3s ease;
+		outline: 0;
+		border: 0;
+		margin: 0;
+	}
+
+	.profile .info button:hover {
+		background: var(--active-red);
+		cursor: pointer;
+	}
+
+	.profile .info img {
+		height: 80px;
+	}
+
+	.profile .avatars {
+		display: grid;
+		grid-template-columns: 1fr 1fr 1fr 1fr;
+		gap: 10px;
+	}
+
+	.history ul {
+		list-style-type: none;
+		padding: 0;
+		margin: 0;
+	}
+
+	.history ul li {
+		margin: 10px 0px;
+		margin-right: 10px;
+	}
+
+	.history ul li:first-of-type {
+		margin-top: 0;
 	}
 </style>
