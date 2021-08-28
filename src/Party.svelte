@@ -42,7 +42,7 @@
 			stop();
 		}
 		const messages = party.messages.slice(
-			Math.max(party.messages.length - 20, 1)
+			Math.max(party.messages.length - 50, 1)
 		);
 
 		const participants = messages
@@ -157,10 +157,10 @@
 			}
 		}
 
-		if ( party.messages.length != currentParty.messages.length ) {
+		if (party.messages.length != currentParty.messages.length) {
 			clearTimeout(undockedMessageReceivedTimer);
 			undockedMessageReceived = true;
-			setTimeout(() => undockedMessageReceived = false, 5000);
+			setTimeout(() => (undockedMessageReceived = false), 5000);
 		}
 
 		party = currentParty;
@@ -306,14 +306,17 @@
 					alt={user?.photoURL}
 				/>
 				<h3>{participantMap.get(party?.host)?.displayName}</h3>
-				<small>{party?.state.playback_state} • {party?.participants.length ?? 0}</small>
+				<small
+					>{party?.state.playback_state} • {party?.participants
+						.length ?? 0}</small
+				>
 			</div>
 		{/if}
 		<div class="content scroll" bind:this={scrollElement}>
 			{#if !profileOpen}
 				<div class="history">
 					<ul>
-						{#each party?.messages.slice(Math.max(party?.messages.length - 20, 1)) || [] as message}
+						{#each party?.messages.slice(Math.max(party?.messages.length - 50, 1)) || [] as message}
 							<li>
 								<HistoryItem
 									name={participantMap.get(
@@ -407,7 +410,8 @@
 		top: 0;
 		right: 0;
 		height: 100%;
-		opacity: 0.1;
+		width: 280px;
+		opacity: 0.05;
 		transition: 0.7s opacity ease-in-out;
 	}
 
