@@ -12,12 +12,17 @@
     $: {
         try {
             const parsed = new URL(url);
-            const v = parsed.searchParams.get("v");
-            valid =
-                parsed.searchParams.has("v") && /[A-Za-z0-9_\-]{11}/.test(v);
-            videoId = parsed.searchParams.get("v");
+            let v = parsed.searchParams.get("v");
+
+            // handle youtu.be links
+            if (!v) {
+                v = parsed.href.split(/[/]+/).pop().split(/[?]+/)[0];
+            }
+            
+            valid = v && /[A-Za-z0-9_\-]{11}/.test(v);
+            videoId = v;
         } catch {
-            valid =false
+            valid = false;
         }
     }
 
